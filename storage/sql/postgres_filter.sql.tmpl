@@ -1,0 +1,33 @@
+SELECT events.id, events.raw 
+FROM events
+LEFT JOIN tags ON events.id = tags.event_id
+WHERE 
+{{- range $i, $f := . }}
+	{{- if $i }} OR {{ end }}
+	(
+		{{- if $f.IDs }}
+			id IN ({{ range $j, $id := $f.IDs }}{{ if $j }}, {{ end }}'{{$id}}'{{ end }})
+		{{- end }}
+		{{- if $f.Kinds }}
+			AND kind IN ({{ range $j, $kind := $f.Kinds }}{{ if $j }}, {{ end }}{{$kind}}{{ end }})
+		{{- end }}
+		{{- if $f.Authors }}
+			AND pubkey IN ({{ range $j, $author := $f.Authors }}{{ if $j }}, {{ end }}'{{$author}}'{{ end }})
+		{{- end }}
+		{{- if $f.Tags }}
+			AND ({{ range $tagKey, $tagValues := $f.Tags }}
+				({{ $tagKey }} IN ({{ range $j, $tagValue := $tagValues }}{{ if $j }}, {{ end }}'{{$tagValue}}'{{ end }}))
+				{{ end }}
+			)
+		{{- end }}
+		{{- if $f.Since }}
+			AND created_at > {{$f.Since}}
+		{{- end }}
+		{{- if $f.Until }}
+			AND created_at < {{$f.Until}}
+		{{- end }}
+		{{- if and $f.Limit (not $f.LimitZero) }}
+			LIMIT {{$f.Limit}}
+		{{- end }}
+	)
+{{- end }}

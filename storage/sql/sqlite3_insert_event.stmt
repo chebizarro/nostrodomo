@@ -1,0 +1,2 @@
+INSERT OR IGNORE INTO events (id, pubkey, created_at, kind, raw)
+VALUES (?, ?, ?, ?, ?);

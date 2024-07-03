@@ -1,0 +1,14 @@
+SELECT id, raw FROM events
+WHERE 1=1
+    {{ if .IDs }} AND id IN ({{ range $j, $id := .IDs }}{{ if $j }}, {{ end }}{{ $id }}{{ end }}) {{ end }}
+    {{ if .Authors }} AND pubkey IN ({{ range $j, $author := .Authors }}{{ if $j }}, {{ end }}{{ $author }}{{ end }}) {{ end }}
+    {{ if .Kinds }} AND kind IN ({{ range $j, $kind := .Kinds }}{{ if $j }}, {{ end }}{{ $kind }}{{ end }}) {{ end }}
+    {{ if .Tags }}
+        {{ range $tagKey, $tagValues := .Tags }}
+            AND JSON_CONTAINS(tags, JSON_ARRAY({{ range $j, $tagValue := $tagValues }}{{ if $j }}, {{ end }}'{{ $tagValue }}'{{ end }}), '$.{{ $tagKey }}') {{ end }}
+    {{ end }}
+    {{ if .Since }} AND created_at > {{ .Since }} {{ end }}
+    {{ if .Until }} AND created_at < {{ .Until }} {{ end }}
+    {{ if .Search }} AND MATCH(JSON_UNQUOTE(JSON_EXTRACT(raw, '$.content'))) AGAINST ({{ .Search }}) {{ end }}
+ORDER BY {{ if .Search }}MATCH(JSON_UNQUOTE(JSON_EXTRACT(raw, '$.content'))) AGAINST ({{ .Search }}) DESC, {{ end }}created_at DESC
+{{ if .LimitZero }} LIMIT 0 {{ else if gt .Limit 0 }} LIMIT {{ .Limit }} {{ end }}

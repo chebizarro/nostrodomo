@@ -1,0 +1,2 @@
+INSERT OR IGNORE INTO tags (event_id, name, value)
+VALUES (?, ?, ?);

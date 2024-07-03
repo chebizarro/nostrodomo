@@ -1,0 +1,24 @@
+relay:
+  host: "localhost"
+  port: 8443
+  url: "http://example.com"
+  max_clients: 100
+
+storage:
+  type: "sqlite3"
+  host: "db.local"
+  port: 5432
+  user: "dbuser"
+  password: "dbpass"
+  name: "mydatabase.db"
+
+auth:
+  no_auth: false
+  cert: "cert.pem"
+  key: "key.pem"
+
+logging:
+  level: "debug"
+  format: "text" # options: "text", "json"
+  output: "stdout" # options: "stdout", "stderr", "file"
+  file_path: "app.log" # only used if output is "file"
