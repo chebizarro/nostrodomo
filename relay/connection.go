@@ -2,6 +2,7 @@ package relay
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"sync"
@@ -38,60 +39,61 @@ func (c *Connection) Listen() {
 	defer func() {
 		ticker.Stop()
 		if c.Connection != nil {
-			c.closeConnection()
+			c.Connection.Close()
 		}
 	}()
 	logger.Info("Client is listening for incoming events")
 	for {
 		select {
 		case event, ok := <-c.Relay.EventChannel:
+			//c.Connection.SetWriteDeadline(time.Now().Add(c.config.WriteWait))
 			if !ok {
 				// The relay closed the channel.
-				logger.Info("EventChannel closed")
-				if c.Connection != nil {
-					c.Connection.WriteMessage(websocket.CloseMessage, []byte{})
+				err := c.Connection.WriteMessage(websocket.CloseMessage, []byte{})
+				if err != nil {
+					logger.Error("Failed to write close message:", err)
 				}
 				return
 			}
-			if c.Connection != nil {
-				c.Connection.SetWriteDeadline(time.Now().Add(c.config.WriteWait))
-				logger.Debug("Received event, checking subscriptions")
 
-				// Ensure the event is not nil
-				if event == nil {
-					logger.Error("Received nil event")
-					continue
+			if c.Connection != nil {
+				c.Lock()
+				err := c.Connection.SetWriteDeadline(time.Now().Add(c.config.WriteWait))
+				if err != nil {
+					logger.Error("Failed to set write deadline:", err)
+					c.Unlock()
+					return
 				}
-
-				c.Subscriptions.Range(
-					func(key string, value nostr.ReqEnvelope) bool {
-						logger.Debug("Checking subscription:", key)
-						logger.Debug("Checking filter:", value.Filters.String())
-						if value.Filters.Match(event) {
-							logger.Debug("Message matches subscription filters")
-							if err := c.Write(&nostr.EventEnvelope{
-								SubscriptionID: &key,
-								Event:          *event,
-							}); err != nil {
-								logger.Error("Failed to write event:", err)
-								return false
-							}
-						} else {
-							logger.Debug("Message does not match subscription filters")
-						}
-						return true
-					},
-				)
+				c.Unlock()
 			}
+
+			c.Subscriptions.Range(func(key string, value nostr.ReqEnvelope) bool {
+				if value.Filters.Match(event) {
+					logger.Info("Message matches subscription filters")
+					c.Write(&nostr.EventEnvelope{
+						SubscriptionID: &key,
+						Event:          *event,
+					})
+				}
+				return true
+			})
 		case <-ticker.C:
+			c.Lock()
 			if c.Connection != nil {
-				c.Connection.SetWriteDeadline(time.Now().Add(c.config.WriteWait))
-				if err := c.Connection.WriteMessage(websocket.PingMessage, nil); err != nil {
+				err := c.Connection.SetWriteDeadline(time.Now().Add(c.config.WriteWait))
+				if err != nil {
+					logger.Error("Failed to set write deadline:", err)
+					c.Unlock()
+					return
+				}
+				err = c.Connection.WriteMessage(websocket.PingMessage, nil)
+				if err != nil {
 					logger.Error("Failed to send ping message:", err)
-					c.closeConnection()
+					c.Unlock()
 					return
 				}
 			}
+			c.Unlock()
 		}
 	}
 }
@@ -110,7 +112,7 @@ func (c *Connection) Read() {
 		c.Relay.DisconnectChannel <- c
 		c.closeConnection()
 	}()
-	c.Connection.SetReadLimit(c.config.MaxMessageSize)
+	//c.Connection.SetReadLimit(c.config.MaxMessageSize)
 	c.Connection.SetReadDeadline(time.Now().Add(c.config.PongWait))
 	c.Connection.SetPongHandler(func(string) error { c.Connection.SetReadDeadline(time.Now().Add(c.config.PongWait)); return nil })
 	for {
@@ -141,6 +143,7 @@ func (c *Connection) Read() {
 
 func (c *Connection) Publish(event *nostr.EventEnvelope) {
 	responseChan := make(chan nostr.Envelope, 1)
+
 	req := &models.PubSubEnvelope{
 		ClientID: c.id,
 		Event:    event,
@@ -148,31 +151,25 @@ func (c *Connection) Publish(event *nostr.EventEnvelope) {
 	}
 
 	c.Relay.PublishChannel <- req
-
-	go func() {
-		select {
-		case res := <-responseChan:
-			c.Write(res)
-		case <-time.After(time.Second * 10): // Timeout handling
-			logger.Error("Publish response timeout")
-		}
-	}()
+	res := <-responseChan
+	c.Write(res)
 }
 
 func (c *Connection) Write(env nostr.Envelope) error {
 	c.Lock()
 	defer c.Unlock()
-	if c.Connection != nil {
-		logger.Debug("Writing to websocket:", env.Label())
-		w, err := c.Connection.NextWriter(websocket.TextMessage)
-		if err != nil {
-			return err
-		}
-		encoder := json.NewEncoder(w)
-		if err := encoder.Encode(env); err != nil {
-			return err
-		}
-		return w.Close()
+	logger.Debug("Writing to websocket:", env.Label())
+	w, err := c.Connection.NextWriter(websocket.TextMessage)
+	if err != nil {
+		return fmt.Errorf("failed to get next writer: %w", err)
+	}
+	encoder := json.NewEncoder(w)
+	if err := encoder.Encode(env); err != nil {
+		w.Close()
+		return fmt.Errorf("failed to encode envelope: %w", err)
+	}
+	if err := w.Close(); err != nil {
+		return fmt.Errorf("failed to close writer: %w", err)
 	}
 	return nil
 }
@@ -208,6 +205,7 @@ func (c *Connection) Subscribe(env *nostr.ReqEnvelope) {
 			case *nostr.ClosedEnvelope:
 				c.UnSubscribe(env.SubscriptionID)
 				c.Write(env)
+				close(result)
 			case *models.RawEventEnvelope:
 				raw, _ := env.MarshalJSON()
 				c.writeRaw(raw)

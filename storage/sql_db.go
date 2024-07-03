@@ -106,43 +106,33 @@ func (db *SQLDB) StoreEvent(ctx context.Context, pub *models.PubSubEnvelope) {
 	e := pub.Event.(*nostr.EventEnvelope)
 	go func() {
 		defer close(responseChan)
-		tx, err := db.db.BeginTx(ctx, nil)
-		if err != nil {
-			responseChan <- &nostr.OKEnvelope{EventID: e.Event.ID, OK: false, Reason: err.Error()}
-			return
-		}
+		logger.Debug("Storing event:", e.Event.ID)
 
-		_, err = tx.StmtContext(ctx, db.insertEventStmt).ExecContext(ctx, e.Event.ID, e.Event.PubKey, time.Unix(int64(e.Event.CreatedAt), 0), e.Event.Kind, e.Event.String())
+		_, err := db.insertEventStmt.ExecContext(ctx, e.Event.ID, e.Event.PubKey, time.Unix(int64(e.Event.CreatedAt), 0), e.Event.Kind, e.Event.String())
 		if err != nil {
-			tx.Rollback()
-			logger.Debug("Event Insert error: ", err)
+			logger.Error("Failed to insert event:", err)
 			responseChan <- &nostr.OKEnvelope{EventID: e.Event.ID, OK: false, Reason: err.Error()}
 			return
 		}
 
 		for _, tag := range e.Event.Tags {
-			_, err := tx.StmtContext(ctx, db.insertTagsStmt).ExecContext(ctx, e.Event.ID, tag.Key(), tag.Value())
+			_, err := db.insertTagsStmt.ExecContext(ctx, e.Event.ID, tag.Key(), tag.Value())
 			if err != nil {
-				tx.Rollback()
-				logger.Debug("Tag Insert error: ", err)
+				logger.Error("Failed to insert tag:", err)
 				responseChan <- &nostr.OKEnvelope{EventID: e.Event.ID, OK: false, Reason: err.Error()}
 				return
 			}
 		}
 
-		if err := tx.Commit(); err != nil {
-			logger.Debug("Commit error: ", err)
-			responseChan <- &nostr.OKEnvelope{EventID: e.Event.ID, OK: false, Reason: err.Error()}
-			return
-		}
-
 		logger.Debug("Event stored:", e.Event.ID)
+
 		select {
 		case db.eventChannel <- &e.Event:
 			logger.Debug("Event sent to EventChannel:", e.Event.ID)
 		default:
-			logger.Error("Failed to send event to EventChannel:", e.Event.ID)
+			logger.Error("EventChannel is full, dropping event:", e.Event.ID)
 		}
+
 		responseChan <- &nostr.OKEnvelope{EventID: e.Event.ID, OK: true, Reason: "Event Processed"}
 	}()
 }
@@ -153,8 +143,6 @@ func (db *SQLDB) FetchEvents(ctx context.Context, sub *models.PubSubEnvelope) {
 	req := sub.Event.(*nostr.ReqEnvelope)
 	go func() {
 		logger.Debug("Goroutine started")
-		db.RLock()
-		defer db.RUnlock()
 		defer db.Done()
 		defer close(responseChan)
 

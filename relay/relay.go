@@ -68,8 +68,8 @@ func (r *Relay) Run() {
 			r.Publish(event)
 		case sub := <-r.SubscriptionChannel:
 			r.Subscribe(sub)
-		case event := <-r.EventChannel:
-			logger.Info("Event published: ", event.ID)
+		//case event := <-r.EventChannel:
+		//	logger.Info("Event published: ", event.ID)
 		}
 	}
 }
@@ -105,12 +105,12 @@ func (r *Relay) Disconnect(connex *Connection) {
 }
 
 func (r *Relay) Publish(env *models.PubSubEnvelope) {
-	logger.Debug("Event received:", env)
+	logger.Debug("Event received from Client:", env.ClientID)
 	r.StorageChannel <- env
 }
 
 func (r *Relay) Subscribe(sub *models.PubSubEnvelope) {
-	logger.Info("Subscription received from Client")
+	logger.Info("Subscription received from Client:", sub.ClientID)
 	r.StorageChannel <- sub
 }
 
