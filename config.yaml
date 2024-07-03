@@ -25,8 +25,8 @@ logging:
 
 websocket:
   writewait: 10s
-  pongwait: 50s
-  pingperiod: 45s
+  pongwait: 60s
+  pingperiod: 54s
   maxmessagesize: 512
   readbuffersize: 1024
   writebuffersize: 1024

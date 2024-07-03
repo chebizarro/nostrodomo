@@ -68,8 +68,8 @@ func (r *Relay) Run() {
 			r.Publish(event)
 		case sub := <-r.SubscriptionChannel:
 			r.Subscribe(sub)
-		//case event := <-r.EventChannel:
-		//	logger.Info("Event published: ", event.ID)
+		case event := <-r.EventChannel:
+			logger.Info("Event published: ", event.ID)
 		}
 	}
 }
@@ -100,7 +100,9 @@ func (r *Relay) Connect(conn *Connection) {
 
 // Disconnects client from the relay.
 func (r *Relay) Disconnect(connex *Connection) {
-	connex.Disconnect()
+	if connex != nil {
+		connex.Disconnect()
+	}
 	r.Connections.Delete(connex.id)
 }
 

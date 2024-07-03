@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -23,14 +24,19 @@ type Connection struct {
 	id            int64
 	sync.RWMutex
 	config *config.WebSocketConfig
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 func NewConnection(cfg *config.WebSocketConfig, relay *Relay, conn *websocket.Conn) *Connection {
+	ctx, cancel := context.WithCancel(context.Background())
 	return &Connection{
 		Relay:         relay,
 		Connection:    conn,
 		Subscriptions: xsync.NewMapOf[string, nostr.ReqEnvelope](),
 		config:        cfg,
+		ctx:           ctx,
+		cancel:        cancel,
 	}
 }
 
@@ -45,6 +51,8 @@ func (c *Connection) Listen() {
 	logger.Info("Client is listening for incoming events")
 	for {
 		select {
+		case <-c.ctx.Done():
+			return
 		case event, ok := <-c.Relay.EventChannel:
 			//c.Connection.SetWriteDeadline(time.Now().Add(c.config.WriteWait))
 			if !ok {
@@ -55,17 +63,9 @@ func (c *Connection) Listen() {
 				}
 				return
 			}
-
-			if c.Connection != nil {
-				c.Lock()
-				err := c.Connection.SetWriteDeadline(time.Now().Add(c.config.WriteWait))
-				if err != nil {
-					logger.Error("Failed to set write deadline:", err)
-					c.Unlock()
-					return
-				}
-				c.Unlock()
-			}
+			c.RLock()
+			c.Connection.SetWriteDeadline(time.Now().Add(c.config.WriteWait))
+			c.RUnlock()
 
 			c.Subscriptions.Range(func(key string, value nostr.ReqEnvelope) bool {
 				if value.Filters.Match(event) {
@@ -78,22 +78,17 @@ func (c *Connection) Listen() {
 				return true
 			})
 		case <-ticker.C:
-			c.Lock()
-			if c.Connection != nil {
-				err := c.Connection.SetWriteDeadline(time.Now().Add(c.config.WriteWait))
-				if err != nil {
-					logger.Error("Failed to set write deadline:", err)
-					c.Unlock()
-					return
-				}
-				err = c.Connection.WriteMessage(websocket.PingMessage, nil)
-				if err != nil {
-					logger.Error("Failed to send ping message:", err)
-					c.Unlock()
-					return
-				}
+			c.RLock()
+			err := c.Connection.SetWriteDeadline(time.Now().Add(c.config.WriteWait))
+			c.RUnlock()
+			if err != nil {
+				logger.Error("Failed to set write deadline:", err)
+				return
 			}
-			c.Unlock()
+			if err := c.Connection.WriteMessage(websocket.PingMessage, nil); err != nil {
+				logger.Error("Failed to send ping message:", err)
+				return
+			}
 		}
 	}
 }
@@ -112,71 +107,91 @@ func (c *Connection) Read() {
 		c.Relay.DisconnectChannel <- c
 		c.closeConnection()
 	}()
-	//c.Connection.SetReadLimit(c.config.MaxMessageSize)
+	c.Connection.SetReadLimit(c.config.MaxMessageSize)
 	c.Connection.SetReadDeadline(time.Now().Add(c.config.PongWait))
 	c.Connection.SetPongHandler(func(string) error { c.Connection.SetReadDeadline(time.Now().Add(c.config.PongWait)); return nil })
 	for {
-		_, message, err := c.Connection.ReadMessage()
-		if err != nil {
-			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				log.Printf("error: %v", err)
-			}
-			break
-		}
-		req := nostr.ParseMessage(message)
-		switch env := req.(type) {
-		case *nostr.EventEnvelope:
-			// Send an event
-			c.Publish(env)
-		case *nostr.ReqEnvelope:
-			// Request a subscription
-			c.Subscribe(env)
-		case *nostr.CloseEnvelope:
-			// Close a subscription
-			c.UnSubscribe(env.String())
+		select {
+		case <-c.ctx.Done():
+			return
 		default:
-			n := nostr.NoticeEnvelope("Unrecognized Event")
-			c.Write(&n)
+			_, message, err := c.Connection.ReadMessage()
+			if err != nil {
+				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+					log.Printf("error: %v", err)
+				}
+				return
+			}
+			req := nostr.ParseMessage(message)
+			switch env := req.(type) {
+			case *nostr.EventEnvelope:
+				// Send an event
+				c.Publish(env)
+			case *nostr.ReqEnvelope:
+				// Request a subscription
+				c.Subscribe(env)
+			case *nostr.CloseEnvelope:
+				// Close a subscription
+				c.UnSubscribe(env.String())
+			default:
+				n := nostr.NoticeEnvelope("Unrecognized Event")
+				c.Write(&n)
+			}
 		}
 	}
 }
 
 func (c *Connection) Publish(event *nostr.EventEnvelope) {
-	responseChan := make(chan nostr.Envelope, 1)
-
+	logger.Info("Publishing event from client")
+	result := make(chan nostr.Envelope)
 	req := &models.PubSubEnvelope{
 		ClientID: c.id,
 		Event:    event,
-		Result:   responseChan,
+		Result:   result,
 	}
-
-	c.Relay.PublishChannel <- req
-	res := <-responseChan
-	c.Write(res)
+	ctx, cancel := context.WithTimeout(c.ctx, 10*time.Second)
+	defer cancel()
+	go func() {
+		select {
+		case c.Relay.PublishChannel <- req:
+		case <-ctx.Done():
+			logger.Error("Failed to send event to PublishChannel:", ctx.Err())
+			result <- &nostr.ClosedEnvelope{SubscriptionID: *event.SubscriptionID, Reason: ctx.Err().Error()}
+			return
+		}
+	}()
+	select {
+	case res := <-result:
+		c.Write(res)
+	case <-ctx.Done():
+		logger.Error("Publishing event timed out:", ctx.Err())
+	}
 }
 
 func (c *Connection) Write(env nostr.Envelope) error {
 	c.Lock()
 	defer c.Unlock()
-	logger.Debug("Writing to websocket:", env.Label())
+	if c.ctx.Err() != nil {
+		return fmt.Errorf("connection closed")
+	}
+	logger.Debug("Writing to websocket:", env.String())
 	w, err := c.Connection.NextWriter(websocket.TextMessage)
 	if err != nil {
-		return fmt.Errorf("failed to get next writer: %w", err)
+		return err
 	}
 	encoder := json.NewEncoder(w)
 	if err := encoder.Encode(env); err != nil {
-		w.Close()
-		return fmt.Errorf("failed to encode envelope: %w", err)
+		return err
 	}
-	if err := w.Close(); err != nil {
-		return fmt.Errorf("failed to close writer: %w", err)
-	}
-	return nil
+	return w.Close()
 }
 
 func (c *Connection) writeRaw(p []byte) error {
 	c.Lock()
 	defer c.Unlock()
+	if c.ctx.Err() != nil {
+		return fmt.Errorf("connection closed")
+	}
 	logger.Debug("Writing raw bytes to the websocket:", string(p))
 	w, err := c.Connection.NextWriter(websocket.TextMessage)
 	if err != nil {
@@ -197,23 +212,21 @@ func (c *Connection) Subscribe(env *nostr.ReqEnvelope) {
 	}
 
 	c.Subscriptions.Store(env.SubscriptionID, *env)
+
 	c.Relay.SubscriptionChannel <- req
 
-	go func() {
-		for res := range result {
-			switch env := res.(type) {
-			case *nostr.ClosedEnvelope:
-				c.UnSubscribe(env.SubscriptionID)
-				c.Write(env)
-				close(result)
-			case *models.RawEventEnvelope:
-				raw, _ := env.MarshalJSON()
-				c.writeRaw(raw)
-			default:
-				c.Write(env)
-			}
+	for res := range result {
+		switch env := res.(type) {
+		case *nostr.ClosedEnvelope:
+			c.UnSubscribe(env.SubscriptionID)
+			c.Write(env)
+		case *models.RawEventEnvelope:
+			raw, _ := env.MarshalJSON()
+			c.writeRaw(raw)
+		default:
+			c.Write(env)
 		}
-	}()
+	}
 }
 
 func (c *Connection) UnSubscribe(subID string) {
@@ -223,19 +236,18 @@ func (c *Connection) UnSubscribe(subID string) {
 
 func (c *Connection) Disconnect() {
 	logger.Info("Client disconnected")
-	c.Subscriptions.Range(
-		func(key string, value nostr.ReqEnvelope) bool {
-			c.Write(
-				&nostr.ClosedEnvelope{
-					SubscriptionID: key,
-					Reason:         "",
-				},
-			)
-			c.UnSubscribe(key)
-			return true
-		},
-	)
-	c.closeConnection()
+	c.cancel() // Cancel all goroutines
+	c.Subscriptions.Range(func(key string, value nostr.ReqEnvelope) bool {
+		c.Write(&nostr.ClosedEnvelope{
+			SubscriptionID: key,
+			Reason:         "",
+		})
+		c.UnSubscribe(key)
+		return true
+	})
+	if c.Connection != nil {
+		c.Connection.Close()
+	}
 }
 
 var upgrader = websocket.Upgrader{
