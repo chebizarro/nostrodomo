@@ -26,7 +26,7 @@ func main() {
 	}
 	logger.Info("Storage initialized")
 
-	r := relay.NewRelay(db)
+	r := relay.NewRelay(db, &conf.WebSocket)
 	logger.Info("Starting Relay")
 	go r.Run()
 

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"strconv"
+	"time"
 
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
@@ -60,12 +61,22 @@ type ClientConfig struct {
 	Version string `mapstructure:"version"`
 }
 
+type WebSocketConfig struct {
+	WriteWait       time.Duration `mapstructure:"writewait"`
+	PongWait        time.Duration `mapstructure:"pongwait"`
+	PingPeriod      time.Duration `mapstructure:"pingperiod"`
+	MaxMessageSize  int64         `mapstructure:"maxmessagesize"`
+	ReadBufferSize  int           `mapstructure:"readbuffersize"`
+	WriteBufferSize int           `mapstructure:"writebuffersize"`
+}
+
 type Config struct {
-	Logging LoggingConfig `mapstructure:"logging"`
-	Relay   RelayConfig   `mapstructure:"relay"`
-	Storage StorageConfig `mapstructure:"storage"`
-	Clients ClientConfig  `mapstructure:"clients"`
-	Auth    AuthConfig    `mapstructure:"auth"`
+	Logging   LoggingConfig   `mapstructure:"logging"`
+	Relay     RelayConfig     `mapstructure:"relay"`
+	Storage   StorageConfig   `mapstructure:"storage"`
+	Clients   ClientConfig    `mapstructure:"clients"`
+	Auth      AuthConfig      `mapstructure:"auth"`
+	WebSocket WebSocketConfig `mapstructure:"websocket"`
 }
 
 func LoadConfig() (*Config, error) {

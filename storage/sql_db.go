@@ -31,7 +31,6 @@ type SQLDB struct {
 }
 
 func NewSQLDatabase(settings *config.StorageConfig) (*SQLDB, error) {
-
 	ctx := context.Background()
 	driverName := settings.Type.String()
 	db, err := sql.Open(driverName, settings.GetConnectionString())
@@ -86,7 +85,6 @@ func NewSQLDatabase(settings *config.StorageConfig) (*SQLDB, error) {
 		insertTagsStmt:  insertTagsStmt,
 		queryTemplate:   queryTemplate,
 	}, nil
-
 }
 
 func (db *SQLDB) Connect(eventChannel chan *nostr.Event) {
@@ -100,8 +98,7 @@ func (db *SQLDB) Disconnect() error {
 	if db.insertTagsStmt != nil {
 		db.insertTagsStmt.Close()
 	}
-	db.db.Close()
-	return nil
+	return db.db.Close()
 }
 
 func (db *SQLDB) StoreEvent(ctx context.Context, pub *models.PubSubEnvelope) {
@@ -109,20 +106,43 @@ func (db *SQLDB) StoreEvent(ctx context.Context, pub *models.PubSubEnvelope) {
 	e := pub.Event.(*nostr.EventEnvelope)
 	go func() {
 		defer close(responseChan)
-		_, err := db.insertEventStmt.ExecContext(ctx, e.Event.ID, e.Event.PubKey, time.Unix(int64(e.Event.CreatedAt), 0), e.Event.Kind, e.Event.String())
+		tx, err := db.db.BeginTx(ctx, nil)
 		if err != nil {
 			responseChan <- &nostr.OKEnvelope{EventID: e.Event.ID, OK: false, Reason: err.Error()}
 			return
 		}
+
+		_, err = tx.StmtContext(ctx, db.insertEventStmt).ExecContext(ctx, e.Event.ID, e.Event.PubKey, time.Unix(int64(e.Event.CreatedAt), 0), e.Event.Kind, e.Event.String())
+		if err != nil {
+			tx.Rollback()
+			logger.Debug("Event Insert error: ", err)
+			responseChan <- &nostr.OKEnvelope{EventID: e.Event.ID, OK: false, Reason: err.Error()}
+			return
+		}
+
 		for _, tag := range e.Event.Tags {
-			_, err := db.insertTagsStmt.ExecContext(ctx, e.Event.ID, tag.Key(), tag.Value())
+			_, err := tx.StmtContext(ctx, db.insertTagsStmt).ExecContext(ctx, e.Event.ID, tag.Key(), tag.Value())
 			if err != nil {
+				tx.Rollback()
+				logger.Debug("Tag Insert error: ", err)
 				responseChan <- &nostr.OKEnvelope{EventID: e.Event.ID, OK: false, Reason: err.Error()}
 				return
 			}
 		}
+
+		if err := tx.Commit(); err != nil {
+			logger.Debug("Commit error: ", err)
+			responseChan <- &nostr.OKEnvelope{EventID: e.Event.ID, OK: false, Reason: err.Error()}
+			return
+		}
+
 		logger.Debug("Event stored:", e.Event.ID)
-		db.eventChannel <- &e.Event
+		select {
+		case db.eventChannel <- &e.Event:
+			logger.Debug("Event sent to EventChannel:", e.Event.ID)
+		default:
+			logger.Error("Failed to send event to EventChannel:", e.Event.ID)
+		}
 		responseChan <- &nostr.OKEnvelope{EventID: e.Event.ID, OK: true, Reason: "Event Processed"}
 	}()
 }
@@ -144,12 +164,14 @@ func (db *SQLDB) FetchEvents(ctx context.Context, sub *models.PubSubEnvelope) {
 			responseChan <- &nostr.ClosedEnvelope{SubscriptionID: req.SubscriptionID, Reason: err.Error()}
 			return
 		}
-		rows, err := db.db.Query(query, args...)
+
+		rows, err := db.db.QueryContext(ctx, query, args...)
 		if err != nil {
 			responseChan <- &nostr.ClosedEnvelope{SubscriptionID: req.SubscriptionID, Reason: err.Error()}
 			return
 		}
 		defer rows.Close()
+
 		for rows.Next() {
 			var id string
 			var raw []byte
@@ -205,9 +227,10 @@ func getPlaceholder(driverName string) tqla.Placeholder {
 	}
 }
 
-func (db *SQLDB) ServicWorker(opChan <-chan *models.PubSubEnvelope) {
+func (db *SQLDB) ServiceWorker(opChan <-chan *models.PubSubEnvelope) {
 	for op := range opChan {
-		ctx, _ := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
 		switch op.Event.(type) {
 		case *nostr.EventEnvelope:
 			db.StoreEvent(ctx, op)

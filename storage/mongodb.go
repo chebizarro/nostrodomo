@@ -143,7 +143,7 @@ func buildMongoQueryForFilter(filter nostr.Filter) bson.M {
 	return query
 }
 
-func (db *MongoDB) ServicWorker(opChan <-chan *models.PubSubEnvelope) {
+func (db *MongoDB) ServiceWorker(opChan <-chan *models.PubSubEnvelope) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	for op := range opChan {

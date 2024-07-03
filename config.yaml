@@ -22,3 +22,11 @@ logging:
   format: "text" # options: "text", "json"
   output: "stdout" # options: "stdout", "stderr", "file"
   file_path: "app.log" # only used if output is "file"
+
+websocket:
+  writewait: 10s
+  pongwait: 60s
+  pingperiod: 54s
+  maxmessagesize: 512
+  readbuffersize: 1024
+  writebuffersize: 1024

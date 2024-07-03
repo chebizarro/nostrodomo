@@ -14,7 +14,7 @@ type Storage interface {
 	Disconnect() error
 	StoreEvent(ctx context.Context, event *models.PubSubEnvelope)
 	FetchEvents(ctx context.Context, req *models.PubSubEnvelope)
-	ServicWorker(opChan <-chan *models.PubSubEnvelope)
+	ServiceWorker(opChan <-chan *models.PubSubEnvelope)
 	//DeleteExpiredEvents(ctx context.Context) error
 }
 
