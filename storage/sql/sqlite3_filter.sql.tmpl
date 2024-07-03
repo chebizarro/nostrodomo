@@ -5,12 +5,12 @@ FROM events
 LEFT JOIN tags ON events.id = tags.event_id
 WHERE 
   1=1
-  {{ if $filter.IDs }} AND events.id IN ({{ range $i, $v := $filter.IDs }}{{if $i}},{{end}}'{{ $v }}'{{ end }}){{ end }}
-  {{ if $filter.Authors }} AND events.pubkey IN ({{ range $i, $v := $filter.Authors }}{{if $i}},{{end}}'{{ $v }}'{{ end }}){{ end }}
-  {{ if $filter.Kinds }} AND events.kind IN ({{ range $i, $v := $filter.Kinds }}{{if $i}},{{end}}'{{ $v }}'{{ end }}){{ end }}
+  {{ if $filter.IDs }} AND events.id IN ({{ range $i, $v := $filter.IDs }}{{if $i}},{{end}}{{ $v }}{{ end }}){{ end }}
+  {{ if $filter.Authors }} AND events.pubkey IN ({{ range $i, $v := $filter.Authors }}{{if $i}},{{end}}{{ $v }}{{ end }}){{ end }}
+  {{ if $filter.Kinds }} AND events.kind IN ({{ range $i, $v := $filter.Kinds }}{{if $i}},{{end}}{{ $v }}{{ end }}){{ end }}
   {{ if $filter.Tags }} AND (
     {{ range $tagName, $tagValues := $filter.Tags }}
-      (tags.name = '{{ $tagName }}' AND tags.value IN ({{ range $i, $v := $tagValues }}{{if $i}},{{end}}'{{ $v }}'{{ end }}))
+      (tags.name = {{ $tagName }} AND tags.value IN ({{ range $i, $v := $tagValues }}{{if $i}},{{end}}{{ $v }}{{ end }}))
     {{ end }}
   ){{ end }}
   {{ if $filter.Since }} AND events.created_at > '{{ $filter.Since }}'{{ end }}

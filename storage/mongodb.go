@@ -3,7 +3,6 @@ package storage
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/nbd-wtf/go-nostr"
 	"go.mongodb.org/mongo-driver/bson"
@@ -145,8 +144,9 @@ func buildMongoQueryForFilter(filter nostr.Filter) bson.M {
 }
 
 func (db *MongoDB) ServicWorker(opChan <-chan *models.PubSubEnvelope) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	for op := range opChan {
-		ctx, _ := context.WithTimeout(context.Background(), 5*time.Second)
 		switch op.Event.(type) {
 		case *nostr.EventEnvelope:
 			db.StoreEvent(ctx, op)

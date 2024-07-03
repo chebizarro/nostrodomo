@@ -18,7 +18,7 @@ const (
 	// Time allowed to read the next pong message from the peer.
 	pongWait = 60 * time.Second
 	// Send pings to peer with this period. Must be less than pongWait.
-	pingPeriod = 29 // (pongWait * 9) / 10
+	pingPeriod = (pongWait * 9) / 10
 	// Maximum message size allowed from peer.
 	maxMessageSize = 512
 )
@@ -121,7 +121,7 @@ func (c *Connection) Publish(event *nostr.EventEnvelope) {
 }
 
 func (c *Connection) Write(env nostr.Envelope) error {
-	logger.Info("Writing to websocket")
+	logger.Debug("Writing to websocket:", env.String())
 	w, err := c.Connection.NextWriter(websocket.TextMessage)
 	if err != nil {
 		return err

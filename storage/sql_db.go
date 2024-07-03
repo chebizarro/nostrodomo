@@ -9,6 +9,7 @@ import (
 
 	"github.com/VauntDev/tqla"
 	"sharegap.net/nostrodomo/config"
+	"sharegap.net/nostrodomo/logger"
 	"sharegap.net/nostrodomo/models"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -118,6 +119,7 @@ func (db *SQLDB) StoreEvent(ctx context.Context, pub *models.PubSubEnvelope) {
 				return
 			}
 		}
+		logger.Debug("Event stored:", e.Event.ID)
 		db.eventChannel <- &e.Event
 		responseChan <- &nostr.OKEnvelope{EventID: e.Event.ID, OK: true, Reason: "Event Processed"}
 	}()
@@ -128,22 +130,21 @@ func (db *SQLDB) FetchEvents(ctx context.Context, sub *models.PubSubEnvelope) {
 	req := sub.Event.(*nostr.ReqEnvelope)
 	go func() {
 		defer close(responseChan)
-		filterWithIndex := make([]FilterWithIndex, len(req.Filters))
 
-		for i, filter := range req.Filters {
-			filterWithIndex[i] = FilterWithIndex{i, filter}
-		}
 		query, args, err := buildSQLQueryForFilter(db.tqlaT, db.queryTemplate, &req.Filters)
 		if err != nil {
 			responseChan <- &nostr.ClosedEnvelope{SubscriptionID: req.SubscriptionID, Reason: err.Error()}
 			return
 		}
-		rows, err := db.db.QueryContext(ctx, query, args...)
+		rows, err := db.db.Query(query, args...)
 		if err != nil {
 			responseChan <- &nostr.ClosedEnvelope{SubscriptionID: req.SubscriptionID, Reason: err.Error()}
 			return
 		}
-
+		defer rows.Close()
+		var r,v string
+		rows.Scan(&r, &v)
+		logger.Debug("Result:", r, v)
 		for rows.Next() {
 			var id string
 			var raw []byte
@@ -153,7 +154,6 @@ func (db *SQLDB) FetchEvents(ctx context.Context, sub *models.PubSubEnvelope) {
 			}
 			responseChan <- &models.RawEventEnvelope{SubscriptionID: &req.SubscriptionID, RawEvent: raw}
 		}
-		rows.Close()
 
 		esoe := nostr.EOSEEnvelope("")
 		responseChan <- &esoe
@@ -165,6 +165,7 @@ func buildSQLQueryForFilter(t TQLATemplate, queryTemplate string, filter *nostr.
 	if err != nil {
 		return "", nil, fmt.Errorf("failed to compile query: %w", err)
 	}
+	logger.Debug("SQL Query generated: ", query, " args: ", args)
 	return query, args, nil
 }
 
@@ -173,6 +174,7 @@ func loadSQLFile(filePath string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	logger.Debug("SQL File loaded from path:", filePath)
 	return string(data), nil
 }
 
@@ -191,7 +193,7 @@ func getPlaceholder(driverName string) tqla.Placeholder {
 
 func (db *SQLDB) ServicWorker(opChan <-chan *models.PubSubEnvelope) {
 	for op := range opChan {
-		ctx, _ := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, _ := context.WithTimeout(context.Background(), 10*time.Second)
 		switch op.Event.(type) {
 		case *nostr.EventEnvelope:
 			db.StoreEvent(ctx, op)
