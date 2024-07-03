@@ -1,5 +1,6 @@
 *.pem
 *.db
 *.conf
+test/*
 
 .vscode

@@ -3,6 +3,7 @@ package relay
 import (
 	"encoding/json"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -34,6 +35,7 @@ type Connection struct {
 	EventChannel  chan *nostr.Event
 	Connection    *websocket.Conn
 	id            int64
+	sync.RWMutex
 }
 
 func (c *Connection) Listen() {
@@ -121,6 +123,8 @@ func (c *Connection) Publish(event *nostr.EventEnvelope) {
 }
 
 func (c *Connection) Write(env nostr.Envelope) error {
+	c.Lock()
+	defer c.Unlock()
 	logger.Debug("Writing to websocket:", env.String())
 	w, err := c.Connection.NextWriter(websocket.TextMessage)
 	if err != nil {
@@ -134,7 +138,9 @@ func (c *Connection) Write(env nostr.Envelope) error {
 }
 
 func (c *Connection) writeRaw(p []byte) error {
-	logger.Info("Writing raw bytes to the websocket")
+	c.Lock()
+	defer c.Unlock()
+	logger.Debug("Writing raw bytes to the websocket:", string(p))
 	w, err := c.Connection.NextWriter(websocket.TextMessage)
 	if err != nil {
 		return err
@@ -156,17 +162,18 @@ func (c *Connection) Subscribe(env *nostr.ReqEnvelope) {
 	c.Subscriptions.Store(env.SubscriptionID, *env)
 
 	c.Relay.SubscriptionChannel <- req
-	res := <-result
 
-	switch env := res.(type) {
-	case *nostr.ClosedEnvelope:
-		c.UnSubscribe(env.SubscriptionID)
-		c.Write(env)
-	case *models.RawEventEnvelope:
-		raw, _ := env.MarshalJSON()
-		c.writeRaw(raw)
-	default:
-		c.Write(env)
+	for res := range result {
+		switch env := res.(type) {
+		case *nostr.ClosedEnvelope:
+			c.UnSubscribe(env.SubscriptionID)
+			c.Write(env)
+		case *models.RawEventEnvelope:
+			raw, _ := env.MarshalJSON()
+			c.writeRaw(raw)
+		default:
+			c.Write(env)
+		}
 	}
 }
 

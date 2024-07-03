@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/VauntDev/tqla"
@@ -25,6 +26,8 @@ type SQLDB struct {
 	insertTagsStmt  *sql.Stmt
 	queryTemplate   string
 	eventChannel    chan *nostr.Event
+	sync.WaitGroup
+	sync.RWMutex
 }
 
 func NewSQLDatabase(settings *config.StorageConfig) (*SQLDB, error) {
@@ -106,7 +109,6 @@ func (db *SQLDB) StoreEvent(ctx context.Context, pub *models.PubSubEnvelope) {
 	e := pub.Event.(*nostr.EventEnvelope)
 	go func() {
 		defer close(responseChan)
-
 		_, err := db.insertEventStmt.ExecContext(ctx, e.Event.ID, e.Event.PubKey, time.Unix(int64(e.Event.CreatedAt), 0), e.Event.Kind, e.Event.String())
 		if err != nil {
 			responseChan <- &nostr.OKEnvelope{EventID: e.Event.ID, OK: false, Reason: err.Error()}
@@ -126,13 +128,19 @@ func (db *SQLDB) StoreEvent(ctx context.Context, pub *models.PubSubEnvelope) {
 }
 
 func (db *SQLDB) FetchEvents(ctx context.Context, sub *models.PubSubEnvelope) {
+	db.Add(1)
 	responseChan := sub.Result
 	req := sub.Event.(*nostr.ReqEnvelope)
 	go func() {
+		logger.Debug("Goroutine started")
+		db.RLock()
+		defer db.RUnlock()
+		defer db.Done()
 		defer close(responseChan)
 
 		query, args, err := buildSQLQueryForFilter(db.tqlaT, db.queryTemplate, &req.Filters)
 		if err != nil {
+			logger.Debug("buildSQLQueryForFilter error: ", err)
 			responseChan <- &nostr.ClosedEnvelope{SubscriptionID: req.SubscriptionID, Reason: err.Error()}
 			return
 		}
@@ -142,22 +150,28 @@ func (db *SQLDB) FetchEvents(ctx context.Context, sub *models.PubSubEnvelope) {
 			return
 		}
 		defer rows.Close()
-		var r,v string
-		rows.Scan(&r, &v)
-		logger.Debug("Result:", r, v)
 		for rows.Next() {
 			var id string
 			var raw []byte
 			if err := rows.Scan(&id, &raw); err != nil {
+				logger.Debug("rows.Scan error: ", err)
 				responseChan <- &nostr.ClosedEnvelope{SubscriptionID: req.SubscriptionID, Reason: err.Error()}
 				return
 			}
 			responseChan <- &models.RawEventEnvelope{SubscriptionID: &req.SubscriptionID, RawEvent: raw}
 		}
 
+		if err := rows.Err(); err != nil {
+			logger.Debug("rows.Err: ", err)
+			responseChan <- &nostr.ClosedEnvelope{SubscriptionID: req.SubscriptionID, Reason: err.Error()}
+			return
+		}
+
+		logger.Debug("Sending esoe")
 		esoe := nostr.EOSEEnvelope("")
 		responseChan <- &esoe
 	}()
+	db.Wait()
 }
 
 func buildSQLQueryForFilter(t TQLATemplate, queryTemplate string, filter *nostr.Filters) (string, []interface{}, error) {
@@ -185,7 +199,7 @@ func getPlaceholder(driverName string) tqla.Placeholder {
 	case "mysql":
 		return tqla.Question
 	case "sqlite3":
-		return tqla.Question
+		return tqla.Dollar
 	default:
 		return tqla.Question
 	}
