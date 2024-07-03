@@ -28,11 +28,13 @@ type SQLDB struct {
 	eventChannel    chan *nostr.Event
 	sync.WaitGroup
 	sync.RWMutex
+	cancel context.CancelFunc
 }
 
 func NewSQLDatabase(settings *config.StorageConfig) (*SQLDB, error) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
 	driverName := settings.Type.String()
+
 	db, err := sql.Open(driverName, settings.GetConnectionString())
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to %s: %w", settings.Type.String(), err)
@@ -84,6 +86,7 @@ func NewSQLDatabase(settings *config.StorageConfig) (*SQLDB, error) {
 		insertEventStmt: insertEventStmt,
 		insertTagsStmt:  insertTagsStmt,
 		queryTemplate:   queryTemplate,
+		cancel:          cancel,
 	}, nil
 }
 
@@ -92,13 +95,15 @@ func (db *SQLDB) Connect(eventChannel chan *nostr.Event) {
 }
 
 func (db *SQLDB) Disconnect() error {
+	db.cancel()
 	if db.insertEventStmt != nil {
 		db.insertEventStmt.Close()
 	}
 	if db.insertTagsStmt != nil {
 		db.insertTagsStmt.Close()
 	}
-	return db.db.Close()
+	db.db.Close()
+	return nil
 }
 
 func (db *SQLDB) StoreEvent(ctx context.Context, pub *models.PubSubEnvelope) {
@@ -126,13 +131,7 @@ func (db *SQLDB) StoreEvent(ctx context.Context, pub *models.PubSubEnvelope) {
 
 		logger.Debug("Event stored:", e.Event.ID)
 
-		select {
-		case db.eventChannel <- &e.Event:
-			logger.Debug("Event sent to EventChannel:", e.Event.ID)
-		default:
-			logger.Error("EventChannel is full, dropping event:", e.Event.ID)
-		}
-
+		db.eventChannel <- &e.Event
 		responseChan <- &nostr.OKEnvelope{EventID: e.Event.ID, OK: true, Reason: "Event Processed"}
 	}()
 }
@@ -143,6 +142,8 @@ func (db *SQLDB) FetchEvents(ctx context.Context, sub *models.PubSubEnvelope) {
 	req := sub.Event.(*nostr.ReqEnvelope)
 	go func() {
 		logger.Debug("Goroutine started")
+		db.RLock()
+		defer db.RUnlock()
 		defer db.Done()
 		defer close(responseChan)
 
